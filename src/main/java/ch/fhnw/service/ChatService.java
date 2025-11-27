@@ -1,8 +1,14 @@
 package ch.fhnw.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
 import ch.fhnw.model.LoginData;
 import ch.fhnw.model.TokenWrapper;
+import ch.fhnw.model.Message;
+
+import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 
 import java.io.IOException;
 import java.net.URI;
@@ -104,4 +110,74 @@ public class ChatService {
     public String getAuthToken() {
         return authToken;
     }
+
+    // --- NACHRICHT SENDEN ---
+    public boolean sendMessage(String recipient, String messageText) throws Exception {
+        String url = baseUrl + "/chat/send";
+        // Message Objekt erstellen
+        Message msg = new Message(authToken, recipient, messageText);
+
+        String jsonBody = mapper.writeValueAsString(msg);
+        String response = sendPostRequest(url, jsonBody);
+
+        // Server antwortet
+        return response.contains("true");
+    }
+
+    // --- NACHRICHTEN ABHOLEN ---
+    public List<Message> pollMessages() throws Exception {
+        String url = baseUrl + "/chat/poll";
+
+        // Nur den Token senden
+        Map<String, String> jsonMap = new HashMap<>();
+        jsonMap.put("token", authToken);
+        String jsonBody = mapper.writeValueAsString(jsonMap);
+
+        String response = sendPostRequest(url, jsonBody);
+
+        // Die Antwort ist eine Liste von Messages
+        // TypeReference hilft Jackson, die Liste korrekt zu erkennen
+        return mapper.readValue(response, new TypeReference<List<Message>>(){});
+    }
+
+    // --- LOGOUT ---
+    public boolean logout() {
+        try {
+            String url = baseUrl + "/user/logout";
+            Map<String, String> jsonMap = new HashMap<>();
+            jsonMap.put("token", authToken);
+            String jsonBody = mapper.writeValueAsString(jsonMap);
+
+            sendPostRequest(url, jsonBody);
+            this.authToken = null; // Token löschen
+            return true;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    // --- CHECK USER ONLINE ---
+    public boolean isUserOnline(String usernameToCheck) {
+        try {
+            String url = baseUrl + "/user/online";
+
+            // Map für JSON erstellen
+            Map<String, String> jsonMap = new HashMap<>();
+            jsonMap.put("token", authToken);
+            jsonMap.put("username", usernameToCheck);
+
+            String jsonBody = mapper.writeValueAsString(jsonMap);
+
+            // Anfrage senden
+            String response = sendPostRequest(url, jsonBody);
+
+            // Server antwortet z.B. mit { "online": true }
+            return response.contains("true");
+        } catch (Exception e) {
+            // Im Fehlerfall gehen wir davon aus, dass er nicht online ist
+            return false;
+        }
+    }
+
 }
