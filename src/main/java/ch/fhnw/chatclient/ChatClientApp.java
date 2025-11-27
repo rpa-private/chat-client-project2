@@ -1,127 +1,426 @@
 package ch.fhnw.chatclient;
 
+import ch.fhnw.model.ChatEntry;
+import ch.fhnw.model.Message;
+import ch.fhnw.service.ChatService;
+import ch.fhnw.service.HistoryStore;
 import javafx.application.Application;
 import javafx.application.Platform;
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
+import javafx.collections.transformation.FilteredList;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
-import javafx.scene.control.*;
+import javafx.scene.control.Button;
+import javafx.scene.control.Label;
+import javafx.scene.control.ListCell;
+import javafx.scene.control.ListView;
+import javafx.scene.control.PasswordField;
+import javafx.scene.control.Separator;
+import javafx.scene.control.TextField;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
-import ch.fhnw.service.ChatService;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 public class ChatClientApp extends Application {
 
-    private ChatService chatService; // Unsere Verbindung zum Server
-    private Label statusLabel;       // Zeigt Nachrichten an den User
+    private static final String DEFAULT_URL = "http://javaprojects.ch:50001";
+
+    private final ChatService chatService = new ChatService();
+    private final HistoryStore historyStore = new HistoryStore();
+    private final ExecutorService worker = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r);
+        t.setDaemon(true);
+        return t;
+    });
+
+    private ScheduledExecutorService scheduler;
+    private volatile boolean running;
+
+    private Stage primaryStage;
+    private Label statusLabel;
+    private TextField urlField;
+    private TextField usernameField;
+    private PasswordField passwordField;
+
+    private ListView<String> contactListView;
+    private TextField searchField;
+    private ObservableList<String> contacts;
+    private FilteredList<String> filteredContacts;
+    private ObservableList<String> onlineContacts;
+    private Label onlineCountLabel;
+
+    private ListView<ChatEntry> chatListView;
+    private ObservableList<ChatEntry> conversationItems;
+    private TextField messageField;
+    private Label contactStatus;
+    private Label headerLabel;
+
+    private String currentUser;
+    private String activeContact;
+    private boolean shutdownHookRegistered = false;
 
     @Override
-    public void start(Stage primaryStage) {
-        // Service initialisieren
-        chatService = new ChatService();
-
-        primaryStage.setTitle("Chat Client - Login");
-
-        // --- Layout ---
-        VBox root = new VBox(10); // 10px Abstand zwischen Elementen
-        root.setPadding(new Insets(20));
-        root.setAlignment(Pos.CENTER);
-
-        // --- UI Elemente ---
-
-        // 1. Server URL
-        Label urlLabel = new Label("Server URL:");
-        TextField urlField = new TextField("http://javaprojects.ch:50001");
-        Button pingButton = new Button("Test Connection (Ping)");
-
-        // 2. Login Daten
-        TextField userField = new TextField();
-        userField.setPromptText("Username (min. 3 Zeichen)");
-
-        PasswordField passField = new PasswordField();
-        passField.setPromptText("Password (min. 3 Zeichen)");
-
-        // 3. Buttons
-        Button registerButton = new Button("Registrieren");
-        Button loginButton = new Button("Login");
-
-        // 4. Status Anzeige
-        statusLabel = new Label("Bereit...");
-        statusLabel.setStyle("-fx-text-fill: grey;");
-
-        // PING
-        pingButton.setOnAction(e -> {
-            String url = urlField.getText();
-            chatService.setBaseUrl(url); // URL im Service setzen
-
-            runAsync(() -> {
-                boolean reachable = chatService.ping();
-                updateStatus(reachable ? "Server erreichbar!" : "Server NICHT erreichbar!", reachable);
-            });
+    public void start(Stage stage) {
+        this.primaryStage = stage;
+        primaryStage.setTitle("Chat Client");
+        primaryStage.setOnCloseRequest(event -> {
+            shutdownApp();
+            Platform.exit();
         });
+        registerShutdownHook();
 
-        // REGISTRIEREN
-        registerButton.setOnAction(e -> {
-            String url = urlField.getText();
-            String user = userField.getText();
-            String pass = passField.getText();
-            chatService.setBaseUrl(url);
-
-            runAsync(() -> {
-                try {
-                    String result = chatService.register(user, pass);
-                    updateStatus("Registriert als: " + result, true);
-                } catch (Exception ex) {
-                    updateStatus("Fehler: " + ex.getMessage(), false);
-                }
-            });
-        });
-
-        // LOGIN
-        loginButton.setOnAction(e -> {
-            String url = urlField.getText();
-            String user = userField.getText();
-            String pass = passField.getText();
-            chatService.setBaseUrl(url);
-
-            runAsync(() -> {
-                try {
-                    boolean success = chatService.login(user, pass);
-                    if (success) {
-                        updateStatus("Login erfolgreich!", true);
-                        // Wechsel zum Chat-Fenster
-                        Platform.runLater(() -> showChatWindow(primaryStage, user));
-                    } else {
-                        updateStatus("Login fehlgeschlagen.", false);
-                    }
-                } catch (Exception ex) {
-                    updateStatus("Fehler: " + ex.getMessage(), false);
-                }
-            });
-        });
-
-        root.getChildren().addAll(
-                urlLabel, urlField, pingButton,
-                new Separator(),
-                new Label("User Data:"), userField, passField,
-                new Separator(),
-                registerButton, loginButton,
-                new Separator(),
-                statusLabel
-        );
-
-        Scene scene = new Scene(root, 350, 450);
-        primaryStage.setScene(scene);
+        showLoginScene();
         primaryStage.show();
     }
 
-    // Hilfsmethode: Führt Netzwerk-Code in einem eigenen Thread aus (damit GUI nicht einfriert)
-    private void runAsync(Runnable task) {
-        new Thread(task).start();
+    @Override
+    public void stop() {
+        shutdownApp();
     }
 
-    // Hilfsmethode: Aktualisiert das Label
+    private void showLoginScene() {
+        Label title = new Label("Chat Client");
+        title.setStyle("-fx-font-size: 24px; -fx-font-weight: bold; -fx-text-fill: #075e54;");
+
+        urlField = new TextField(DEFAULT_URL);
+        urlField.setPromptText("Server URL");
+
+        usernameField = new TextField();
+        usernameField.setPromptText("Username (min. 3 Zeichen)");
+
+        passwordField = new PasswordField();
+        passwordField.setPromptText("Passwort");
+
+        Button pingButton = new Button("Ping");
+        Button registerButton = new Button("Registrieren");
+        Button loginButton = new Button("Login");
+
+        statusLabel = new Label("Bereit");
+        statusLabel.setStyle("-fx-text-fill: #555;");
+
+        pingButton.setOnAction(e -> runAsync(this::handlePing));
+        registerButton.setOnAction(e -> runAsync(this::handleRegister));
+        loginButton.setOnAction(e -> runAsync(this::handleLogin));
+
+        VBox form = new VBox(12,
+                title,
+                new Label("Server"),
+                urlField,
+                new Label("Benutzername"),
+                usernameField,
+                new Label("Passwort"),
+                passwordField,
+                new HBox(10, pingButton, registerButton, loginButton),
+                statusLabel
+        );
+        form.setPadding(new Insets(24));
+        form.setAlignment(Pos.CENTER);
+        form.setStyle("-fx-background-color: white; -fx-border-radius: 12; -fx-background-radius: 12; -fx-effect: dropshadow(two-pass-box, rgba(0,0,0,0.1), 12, 0, 0, 4);");
+
+        BorderPane root = new BorderPane();
+        root.setCenter(form);
+        root.setPadding(new Insets(30));
+        root.setStyle("-fx-background-color: linear-gradient(to bottom right, #d7f0e8, #f7f7f7);");
+
+        Scene scene = new Scene(root, 420, 520);
+        primaryStage.setScene(scene);
+    }
+
+    private void handlePing() {
+        chatService.setBaseUrl(urlField.getText().trim());
+        boolean ok = chatService.ping();
+        updateStatus(ok ? "Server erreichbar" : "Server nicht erreichbar", ok);
+    }
+
+    private void handleRegister() {
+        chatService.setBaseUrl(urlField.getText().trim());
+        try {
+            String result = chatService.register(usernameField.getText().trim(), passwordField.getText().trim());
+            updateStatus("Registriert: " + result, true);
+        } catch (Exception e) {
+            updateStatus("Registrierung fehlgeschlagen: " + e.getMessage(), false);
+        }
+    }
+
+    private void handleLogin() {
+        chatService.setBaseUrl(urlField.getText().trim());
+        try {
+            boolean success = chatService.login(usernameField.getText().trim(), passwordField.getText().trim());
+            if (success) {
+                currentUser = usernameField.getText().trim();
+                Platform.runLater(this::showChatScene);
+            } else {
+                updateStatus("Login fehlgeschlagen", false);
+            }
+        } catch (Exception e) {
+            updateStatus("Login fehlgeschlagen: " + e.getMessage(), false);
+        }
+    }
+
+    private void showChatScene() {
+        contacts = FXCollections.observableArrayList();
+        filteredContacts = new FilteredList<>(contacts, s -> true);
+        onlineContacts = FXCollections.observableArrayList();
+        conversationItems = FXCollections.observableArrayList();
+
+        contactListView = new ListView<>(filteredContacts);
+        contactListView.setPrefWidth(240);
+        contactListView.setStyle("-fx-background-color: transparent;");
+        contactListView.getSelectionModel().selectedItemProperty().addListener((obs, old, sel) -> {
+            if (sel != null) {
+                selectContact(sel);
+            }
+        });
+        contactListView.setCellFactory(list -> new ListCell<>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    setStyle("");
+                } else {
+                    setText(item);
+                    boolean isOnline = onlineContacts.contains(item);
+                    if (isOnline) {
+                        setStyle("-fx-font-weight: bold; -fx-text-fill: #000000;");
+                    } else {
+                        setStyle("-fx-text-fill: #888888;");
+                    }
+                }
+            }
+        });
+
+        searchField = new TextField();
+        searchField.setPromptText("Suche nach Kontakten");
+        searchField.textProperty().addListener((obs, old, text) -> {
+            String term = text.toLowerCase();
+            filteredContacts.setPredicate(name -> name.toLowerCase().contains(term));
+            if (!term.isBlank()) {
+                runAsync(this::refreshUsersAndOnline);
+            }
+        });
+
+        Button refreshButton = new Button("Online aktualisieren");
+        refreshButton.setOnAction(e -> runAsync(this::refreshUsersAndOnline));
+
+        Button logoutButton = new Button("Logout");
+        logoutButton.setOnAction(e -> runAsync(this::logoutAndBack));
+
+        statusLabel = new Label("Verbunden mit " + chatService.getBaseUrl());
+        statusLabel.setStyle("-fx-text-fill: #555;");
+
+        Label userBadge = new Label(currentUser);
+        userBadge.setStyle("-fx-font-weight: bold; -fx-text-fill: #075e54;");
+        onlineCountLabel = new Label("Online: 0");
+        onlineCountLabel.setStyle("-fx-text-fill: #075e54;");
+
+        VBox left = new VBox(12,
+                userBadge,
+                searchField,
+                onlineCountLabel,
+                contactListView,
+                new Separator(),
+                new HBox(10, refreshButton, logoutButton),
+                statusLabel
+        );
+        left.setPadding(new Insets(14));
+        left.setPrefWidth(260);
+        left.setStyle("-fx-background-color: #ededed;");
+
+        headerLabel = new Label("Keine Unterhaltung gewählt");
+        headerLabel.setStyle("-fx-font-size: 16px; -fx-font-weight: bold;");
+        contactStatus = new Label("offline");
+        contactStatus.setStyle("-fx-text-fill: red; -fx-font-weight: bold;");
+
+        HBox header = new HBox(10, headerLabel, contactStatus);
+        header.setAlignment(Pos.CENTER_LEFT);
+        header.setPadding(new Insets(10));
+        header.setStyle("-fx-background-color: #075e54; -fx-text-fill: white;");
+        headerLabel.setStyle("-fx-text-fill: white; -fx-font-size: 16px; -fx-font-weight: bold;");
+        contactStatus.setStyle("-fx-text-fill: white; -fx-font-size: 12px; -fx-font-weight: bold;");
+
+        chatListView = new ListView<>(conversationItems);
+        chatListView.setFocusTraversable(false);
+        chatListView.setStyle("-fx-background-color: #e5ddd5;");
+        chatListView.setCellFactory(list -> new ListCell<>() {
+            @Override
+            protected void updateItem(ChatEntry item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setGraphic(null);
+                    setText(null);
+                } else {
+                    Label bubble = new Label(item.getMessage());
+                    bubble.setWrapText(true);
+                    bubble.setMaxWidth(320);
+                    bubble.setPadding(new Insets(8, 12, 8, 12));
+                    String bubbleColor = item.isOutgoing() ? "#dcf8c6" : "#ffffff";
+                    bubble.setStyle("-fx-background-color: " + bubbleColor + "; -fx-background-radius: 12; -fx-border-radius: 12; -fx-border-color: #dcdcdc;");
+                    HBox box = new HBox(bubble);
+                    box.setPadding(new Insets(6));
+                    box.setAlignment(item.isOutgoing() ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
+                    setGraphic(box);
+                    setText(null);
+                }
+            }
+        });
+
+        messageField = new TextField();
+        messageField.setPromptText("Nachricht eingeben...");
+        messageField.setOnAction(e -> sendCurrentMessage());
+
+        Button sendButton = new Button("Senden");
+        sendButton.setOnAction(e -> sendCurrentMessage());
+
+        HBox inputBar = new HBox(10, messageField, sendButton);
+        HBox.setHgrow(messageField, Priority.ALWAYS);
+        inputBar.setPadding(new Insets(10));
+        inputBar.setStyle("-fx-background-color: #f0f0f0;");
+
+        VBox right = new VBox(header, chatListView, inputBar);
+        VBox.setVgrow(chatListView, Priority.ALWAYS);
+
+        BorderPane root = new BorderPane();
+        root.setLeft(left);
+        root.setCenter(right);
+        root.setStyle("-fx-background-color: #d7f0e8;");
+
+        Scene chatScene = new Scene(root, 900, 600);
+        primaryStage.setScene(chatScene);
+
+        loadContactsFromHistory();
+        runAsync(this::refreshUsersAndOnline);
+        startSchedulers();
+    }
+
+    private void loadContactsFromHistory() {
+        List<String> known = historyStore.loadContacts(currentUser);
+        Platform.runLater(() -> contacts.setAll(known));
+    }
+
+    private void selectContact(String contact) {
+        activeContact = contact;
+        headerLabel.setText(contact);
+        updateContactStatus(false);
+        loadConversation(contact);
+        runAsync(this::refreshOnlineState);
+    }
+
+    private void loadConversation(String contact) {
+        List<ChatEntry> history = historyStore.loadConversation(currentUser, contact);
+        Platform.runLater(() -> {
+            conversationItems.setAll(history);
+            chatListView.scrollTo(conversationItems.size() - 1);
+        });
+    }
+
+    private void sendCurrentMessage() {
+        String text = messageField.getText().trim();
+        if (text.isEmpty() || activeContact == null) {
+            return;
+        }
+        messageField.clear();
+        runAsync(() -> {
+            try {
+                boolean sent = chatService.sendMessage(activeContact, text);
+                if (sent) {
+                    historyStore.append(currentUser, activeContact, true, text);
+                    Platform.runLater(() -> {
+                        conversationItems.add(new ChatEntry(activeContact, true, text, System.currentTimeMillis()));
+                        chatListView.scrollTo(conversationItems.size() - 1);
+                    });
+                } else {
+                    updateStatus("User offline", false);
+                }
+            } catch (Exception e) {
+                updateStatus("Senden fehlgeschlagen: " + e.getMessage(), false);
+            }
+        });
+    }
+
+    private void pollMessages() {
+        if (!running) {
+            return;
+        }
+        try {
+            List<Message> messages = chatService.pollMessages();
+            if (messages.isEmpty()) {
+                return;
+            }
+            for (Message msg : messages) {
+                historyStore.append(currentUser, msg.getUsername(), false, msg.getMessage());
+            }
+            Platform.runLater(() -> {
+                Set<String> newContacts = new HashSet<>();
+                for (Message msg : messages) {
+                    newContacts.add(msg.getUsername());
+                    if (msg.getUsername().equals(activeContact)) {
+                        conversationItems.add(new ChatEntry(msg.getUsername(), false, msg.getMessage(), System.currentTimeMillis()));
+                    }
+                }
+                if (!newContacts.isEmpty()) {
+                    Set<String> merged = new HashSet<>(contacts);
+                    merged.addAll(newContacts);
+                    contacts.setAll(merged);
+                }
+                chatListView.scrollTo(conversationItems.size() - 1);
+            });
+        } catch (Exception e) {
+            System.err.println("Polling Fehler: " + e.getMessage());
+        }
+    }
+
+    private void refreshUsersAndOnline() {
+        List<String> allUsers = chatService.fetchAllUsers();
+        List<String> online = chatService.fetchOnlineUsers();
+        Set<String> merged = new HashSet<>(allUsers);
+        merged.addAll(historyStore.loadContacts(currentUser));
+        if (activeContact != null) {
+            merged.add(activeContact);
+        }
+        List<String> sorted = new ArrayList<>(merged);
+        Collections.sort(sorted, String::compareToIgnoreCase);
+
+        List<String> uniqueOnline = online.stream().distinct().toList();
+        Platform.runLater(() -> {
+            contacts.setAll(sorted);
+            onlineContacts.setAll(uniqueOnline);
+            if (onlineCountLabel != null) {
+                onlineCountLabel.setText("Online: " + uniqueOnline.size());
+            }
+            contactListView.refresh();
+        });
+    }
+
+    private void refreshOnlineState() {
+        if (activeContact == null) {
+            return;
+        }
+        boolean online = chatService.isUserOnline(activeContact);
+        Platform.runLater(() -> updateContactStatus(online));
+    }
+
+    private void updateContactStatus(boolean online) {
+        contactStatus.setText(online ? "online" : "offline");
+        contactStatus.setStyle(online
+                ? "-fx-text-fill: #c8facc; -fx-font-weight: bold;"
+                : "-fx-text-fill: #ffd6d6; -fx-font-weight: bold;");
+    }
+
     private void updateStatus(String text, boolean success) {
         Platform.runLater(() -> {
             statusLabel.setText(text);
@@ -129,142 +428,53 @@ public class ChatClientApp extends Application {
         });
     }
 
+    private void logoutAndBack() {
+        stopSchedulers();
+        chatService.logout();
+        chatService.clearToken();
+        currentUser = null;
+        activeContact = null;
+        Platform.runLater(this::showLoginScene);
+    }
+
+    private void startSchedulers() {
+        stopSchedulers();
+        running = true;
+        scheduler = Executors.newScheduledThreadPool(3);
+        scheduler.scheduleAtFixedRate(this::pollMessages, 1, 1, TimeUnit.SECONDS);
+        scheduler.scheduleAtFixedRate(this::refreshOnlineState, 2, 4, TimeUnit.SECONDS);
+        scheduler.scheduleAtFixedRate(this::refreshUsersAndOnline, 3, 10, TimeUnit.SECONDS);
+    }
+
+    private void stopSchedulers() {
+        running = false;
+        if (scheduler != null) {
+            scheduler.shutdownNow();
+        }
+    }
+
+    private void shutdownApp() {
+        stopSchedulers();
+        worker.shutdownNow();
+        chatService.logout();
+    }
+
+    private void runAsync(Runnable task) {
+        worker.submit(task);
+    }
+
+    private void registerShutdownHook() {
+        if (shutdownHookRegistered) {
+            return;
+        }
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            chatService.logout();
+            chatService.clearToken();
+        }));
+        shutdownHookRegistered = true;
+    }
+
     public static void main(String[] args) {
         launch(args);
     }
-
-    private volatile boolean isRunning = true; // Stoppt den Poller beim Logout
-
-    private void showChatWindow(Stage stage, String myUsername) {
-        stage.setTitle("Chat Client - Angemeldet als: " + myUsername);
-
-        // --- UI Elemente ---
-        TextArea chatArea = new TextArea();
-        chatArea.setEditable(false); // Nur lesen
-        chatArea.setWrapText(true);
-
-        TextField recipientField = new TextField();
-        recipientField.setPromptText("Empfänger (Name)");
-
-        Button checkButton = new Button("Online?");
-
-        // Status Anzeige (ein Label, das die Farbe wechselt)
-        Label statusIndicator = new Label("");
-        statusIndicator.setMinWidth(60); // Platz reservieren
-        statusIndicator.setStyle("-fx-font-weight: bold;");
-
-        // Aktion für den Button
-        checkButton.setOnAction(e -> {
-            String name = recipientField.getText();
-            if (name == null || name.trim().isEmpty()) return;
-
-            // UI Feedback: "Ich arbeite..."
-            statusIndicator.setText("...");
-            statusIndicator.setStyle("-fx-text-fill: black;");
-
-            // Im Hintergrund prüfen
-            runAsync(() -> {
-                boolean online = chatService.isUserOnline(name);
-                Platform.runLater(() -> {
-                    if (online) {
-                        statusIndicator.setText("✔ Online");
-                        statusIndicator.setStyle("-fx-text-fill: green; -fx-font-weight: bold;");
-                    } else {
-                        statusIndicator.setText("X Offline");
-                        statusIndicator.setStyle("-fx-text-fill: red; -fx-font-weight: bold;");
-                    }
-                });
-            });
-        });
-
-        javafx.scene.layout.HBox recipientBox = new javafx.scene.layout.HBox(10, recipientField, checkButton, statusIndicator);
-        recipientBox.setAlignment(Pos.CENTER_LEFT);
-
-        TextField messageField = new TextField();
-        messageField.setPromptText("Deine Nachricht...");
-
-        Button sendButton = new Button("Senden");
-
-        // Enter-Taste zum Senden im Nachrichtenfeld
-        messageField.setOnAction(event -> sendButton.fire());            // Simuliert einen Klick auf den Senden-Button
-
-        // Wir packen die recipientBox und das messageField untereinander
-        VBox inputBox = new VBox(10,
-                new Label("An wen schreiben?"),
-                recipientBox,
-                new Label("Nachricht:"),
-                messageField,
-                sendButton
-        );
-        inputBox.setPadding(new Insets(10));
-
-        Button logoutButton = new Button("Logout");
-
-        // Hauptlayout
-        javafx.scene.layout.BorderPane root = new javafx.scene.layout.BorderPane();
-        root.setTop(logoutButton);
-        root.setCenter(chatArea);
-        root.setBottom(inputBox);
-        BorderPane.setMargin(logoutButton, new Insets(5));
-
-        // --- Logik ---
-
-        // SENDEN
-        sendButton.setOnAction(e -> {
-            String target = recipientField.getText();
-            String text = messageField.getText();
-            if (target.isEmpty() || text.isEmpty()) return;
-
-            runAsync(() -> {
-                try {
-                    boolean sent = chatService.sendMessage(target, text);
-                    if (sent) {
-                        Platform.runLater(() -> {
-                            chatArea.appendText("Ich an " + target + ": " + text + "\n");
-                            messageField.clear();
-                        });
-                    }
-                } catch (Exception ex) {
-                    ex.printStackTrace();
-                }
-            });
-        });
-
-        // LOGOUT
-        logoutButton.setOnAction(e -> {
-            isRunning = false; // Polling stoppen
-            runAsync(() -> chatService.logout());
-            // Zurück zum Login Screen
-            try { start(stage); } catch (Exception ex) {}
-        });
-
-        // POLLING - Endlosschleife im Hintergrund
-        Thread poller = new Thread(() -> {
-            while (isRunning) {
-                try {
-                    // Jede Sekunde abfragen
-                    Thread.sleep(1000);
-
-                    var messages = chatService.pollMessages();
-
-                    if (!messages.isEmpty()) {
-                        Platform.runLater(() -> {
-                            for (var msg : messages) {
-                                chatArea.appendText(msg.getUsername() + ": " + msg.getMessage() + "\n");
-                            }
-                        });
-                    }
-                } catch (Exception ex) {
-                    // Fehler beim Pollen ignorieren
-                }
-            }
-        });
-        poller.setDaemon(true); // Beendet Thread wenn Fenster zugeht
-        poller.start();
-
-        // Szene wechseln
-        Scene chatScene = new Scene(root, 400, 500);
-        stage.setScene(chatScene);
-    }
-
 }
