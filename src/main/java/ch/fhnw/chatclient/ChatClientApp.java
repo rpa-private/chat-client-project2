@@ -146,6 +146,11 @@ public class ChatClientApp extends Application {
         updateStatus(ok ? "Server erreichbar" : "Server nicht erreichbar", ok);
     }
 
+    private void handlePingWithToken() {
+        boolean ok = chatService.pingWithToken();
+        updateStatus(ok ? "Token gültig" : "Token ungültig oder abgelaufen", ok);
+    }
+
     private void handleRegister() {
         chatService.setBaseUrl(urlField.getText().trim());
         try {
@@ -161,6 +166,12 @@ public class ChatClientApp extends Application {
         try {
             boolean success = chatService.login(usernameField.getText().trim(), passwordField.getText().trim());
             if (success) {
+                boolean tokenOk = chatService.pingWithToken();
+                if (!tokenOk) {
+                    updateStatus("Login fehlgeschlagen: Token ungültig", false);
+                    chatService.clearToken();
+                    return;
+                }
                 currentUser = usernameField.getText().trim();
                 Platform.runLater(this::showChatScene);
             } else {
@@ -217,24 +228,31 @@ public class ChatClientApp extends Application {
         Button refreshButton = new Button("Online aktualisieren");
         refreshButton.setOnAction(e -> runAsync(this::refreshUsersAndOnline));
 
-        Button logoutButton = new Button("Logout");
-        logoutButton.setOnAction(e -> runAsync(this::logoutAndBack));
+        Button pingTokenButton = new Button("Ping Token");
+        pingTokenButton.setOnAction(e -> runAsync(this::handlePingWithToken));
 
         statusLabel = new Label("Verbunden mit " + chatService.getBaseUrl());
         statusLabel.setStyle("-fx-text-fill: #555;");
 
         Label userBadge = new Label(currentUser);
         userBadge.setStyle("-fx-font-weight: bold; -fx-text-fill: #075e54;");
+
+        Button logoutButton = new Button("Logout");
+        logoutButton.setOnAction(e -> runAsync(this::logoutAndBack));
+
+        HBox userHeader = new HBox(10, userBadge, logoutButton);
+        userHeader.setAlignment(Pos.CENTER_LEFT);
+
         onlineCountLabel = new Label("Online: 0");
         onlineCountLabel.setStyle("-fx-text-fill: #075e54;");
 
         VBox left = new VBox(12,
-                userBadge,
+                userHeader,
                 searchField,
                 onlineCountLabel,
                 contactListView,
                 new Separator(),
-                new HBox(10, refreshButton, logoutButton),
+                new HBox(10, refreshButton, pingTokenButton),
                 statusLabel
         );
         left.setPadding(new Insets(14));

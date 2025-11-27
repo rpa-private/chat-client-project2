@@ -55,6 +55,28 @@ public class ChatService {
         }
     }
 
+    public boolean pingWithToken() {
+        if (authToken == null) {
+            return false;
+        }
+        try {
+            String url = baseUrl + "/ping";
+            Map<String, String> jsonMap = new HashMap<>();
+            jsonMap.put("token", authToken);
+            String jsonBody = mapper.writeValueAsString(jsonMap);
+
+            String response = sendPostRequest(url, jsonBody);
+            JsonNode node = mapper.readTree(response);
+            if (node.has("ping")) {
+                return node.get("ping").asBoolean(false);
+            }
+            return response.contains("true");
+        } catch (Exception e) {
+            System.err.println("Ping (auth) fehlgeschlagen: " + e.getMessage());
+            return false;
+        }
+    }
+
     public String register(String user, String password) throws Exception {
         String url = baseUrl + "/user/register";
         LoginData data = new LoginData(user, password);
