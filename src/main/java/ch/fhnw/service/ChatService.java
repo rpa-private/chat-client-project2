@@ -2,6 +2,7 @@ package ch.fhnw.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import ch.fhnw.model.LoginData;
 import ch.fhnw.model.TokenWrapper;
 import ch.fhnw.model.Message;
@@ -135,9 +136,26 @@ public class ChatService {
 
         String response = sendPostRequest(url, jsonBody);
 
-        // Die Antwort ist eine Liste von Messages
-        // TypeReference hilft Jackson, die Liste korrekt zu erkennen
-        return mapper.readValue(response, new TypeReference<List<Message>>(){});
+        // DEBUG: Damit wir sehen, was wirklich zurückkommt (falls es immer noch nicht geht)
+        // System.out.println("Server Antwort Poll: " + response);
+
+        // JSON Baum einlesen
+        JsonNode rootNode = mapper.readTree(response);
+
+        // Fall 1: Der Server antwortet mit {"messages": [ ... ]} (Wie im PDF Beispiel)
+        if (rootNode.has("messages")) {
+            JsonNode messagesNode = rootNode.get("messages");
+            // Den Inhalt des "messages"-Feldes in eine Liste umwandeln
+            return mapper.readerFor(new TypeReference<List<Message>>(){})
+                    .readValue(messagesNode);
+        }
+        // Fall 2: Der Server antwortet direkt mit [ ... ] (Falls er sich anders verhält)
+        else if (rootNode.isArray()) {
+            return mapper.readValue(response, new TypeReference<List<Message>>(){});
+        }
+
+        // Fall 3: Leere Antwort oder Fehler -> Leere Liste zurückgeben
+        return List.of();
     }
 
     // --- LOGOUT ---
